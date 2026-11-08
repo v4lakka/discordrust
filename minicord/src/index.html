@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>minicord</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:flex;font:14px system-ui,sans-serif;background:#313338;color:#dbdee1}
+button{font:inherit;cursor:pointer;border:0;color:inherit;background:none}
+#rail{width:64px;background:#1e1f22;padding:8px 0;display:flex;flex-direction:column;align-items:center;gap:8px;flex:none;overflow:auto}
+#rail button{width:44px;height:44px;border-radius:50%;background:#313338;font-weight:bold;font-size:16px}
+#rail button.on{background:#5865f2;border-radius:14px}
+#col{width:210px;background:#2b2d31;flex:none;display:flex;flex-direction:column}
+#sn{padding:14px 12px;font-weight:bold;border-bottom:1px solid #1e1f22}
+#chs{flex:1;overflow:auto;padding:8px}
+#chs button{display:block;width:100%;text-align:left;padding:6px 8px;border-radius:4px;color:#949ba4}
+#chs button.on{background:#404249;color:#fff}
+#chs button:hover{background:#35373c}
+#main{flex:1;display:flex;flex-direction:column;min-width:0}
+#log{flex:1;overflow:auto;padding:12px 16px}
+#log div{margin-bottom:8px;white-space:pre-wrap;word-break:break-word}
+#log small{color:#949ba4;margin-left:6px;font-size:11px}
+#t{margin:0 16px 16px;padding:12px;border:0;border-radius:8px;background:#383a40;color:inherit;font:inherit;outline:0}
+#mem{width:180px;background:#2b2d31;padding:12px;white-space:pre-line;flex:none;color:#949ba4;overflow:auto}
+@media(max-width:700px){#mem{display:none}#col{width:130px}}
+</style>
+<div id="rail"></div>
+<div id="col"><div id="sn"></div><div id="chs"></div></div>
+<div id="main"><div id="log"></div><input id="t" autocomplete="off" maxlength="2000" placeholder="Escribí un mensaje"></div>
+<div id="mem"></div>
+<script>
+const $ = id => document.getElementById(id);
+const J = (u, b) => fetch(u, b && { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json());
+let name = localStorage.getItem('n') || prompt('Nombre de usuario:') || 'anon';
+localStorage.setItem('n', name);
+let codes = JSON.parse(localStorage.getItem('s') || '["inicio"]'), S = {}, cur = codes[0], ch = 0, ws;
+const save = () => localStorage.setItem('s', JSON.stringify(codes));
+
+function btn(text, fn, cls, title) {
+  const b = document.createElement('button');
+  b.textContent = text; b.onclick = fn; b.className = cls || ''; if (title) b.title = title;
+  return b;
+}
+
+async function load() {
+  S = {};
+  for (const c of codes) { const s = await J('/s/' + c); if (s) S[c] = s; }
+  codes = codes.filter(c => S[c]); save();
+  if (!S[cur]) cur = codes[0];
+  draw();
+}
+
+function draw() {
+  const R = $('rail'); R.textContent = '';
+  codes.forEach(c => R.append(btn(S[c].name[0].toUpperCase(), () => { cur = c; ch = 0; draw(); }, c === cur ? 'on' : '', S[c].name)));
+  R.append(btn('+', mk, '', 'Crear servidor'), btn('→', jn, '', 'Unirse con código'));
+  const s = S[cur], C = $('chs'); C.textContent = '';
+  if (!s) { $('sn').textContent = 'Sin servidores'; return; }
+  $('sn').textContent = s.name + ' · código: ' + s.code;
+  s.channels.forEach(x => C.append(btn('# ' + x.name, () => go(x.id), x.id === ch ? 'on' : '')));
+  C.append(btn('+ Crear canal', () => { const n = prompt('Nombre del canal:'); if (n) J('/s/' + s.id + '/c', { name: n }); }));
+  if (!s.channels.some(x => x.id === ch) && s.channels[0]) go(s.channels[0].id);
+}
+
+function mk() {
+  const n = prompt('Nombre del servidor:');
+  if (n) J('/s', { name: n }).then(s => { if (s) { codes.push(s.code); save(); cur = s.code; ch = 0; load(); } });
+}
+function jn() {
+  const c = (prompt('Código de invitación:') || '').trim();
+  if (c && !codes.includes(c)) { codes.push(c); cur = c; ch = 0; load(); }
+}
+
+function add(m) {
+  const L = $('log'), d = document.createElement('div'), b = document.createElement('b'), s = document.createElement('small');
+  b.textContent = m.user; s.textContent = new Date(m.ts * 1000).toTimeString().slice(0, 5);
+  d.append(b, s, document.createElement('br'), document.createTextNode(m.text));
+  L.appendChild(d);
+  while (L.childElementCount > 200) L.firstChild.remove();
+  L.scrollTop = L.scrollHeight;
+}
+
+function go(id) {
+  ch = id; $('log').textContent = '';
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'join', ch: id }));
+  fetch('/h/' + id).then(r => r.json()).then(a => { if (ch === id) a.forEach(add); });
+  draw();
+}
+
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?name=' + encodeURIComponent(name));
+  ws.onopen = () => { if (ch) ws.send(JSON.stringify({ t: 'join', ch })); };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'msg') add(m);
+    else if (m.t === 'users') $('mem').textContent = 'EN LÍNEA — ' + m.users.length + '\n' + m.users.join('\n');
+    else if (m.t === 'chan' && codes.some(c => S[c] && S[c].id === m.sid)) load();
+  };
+  ws.onclose = () => setTimeout(connect, 2000);
+}
+
+$('t').onkeydown = e => {
+  if (e.key !== 'Enter') return;
+  const v = e.target.value.trim();
+  if (v && ws.readyState === 1) ws.send(JSON.stringify({ t: 'msg', text: v }));
+  e.target.value = '';
+};
+
+connect();
+load();
+</script>
